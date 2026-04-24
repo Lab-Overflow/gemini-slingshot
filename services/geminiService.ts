@@ -12,7 +12,7 @@ import {
   AiProvider
 } from '../types';
 
-const DEFAULT_PROVIDER: AiProvider = 'gemini';
+const DEFAULT_PROVIDER: AiProvider = 'openai';
 
 const getApiEndpoint = () => {
   const baseUrl = import.meta.env.BASE_URL || '/';

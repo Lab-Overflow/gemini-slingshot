@@ -73,12 +73,14 @@ const GeminiSlingshot: React.FC = () => {
   const aimTargetRef = useRef<Point | null>(null);
   const isAiThinkingRef = useRef<boolean>(false);
   const aiRecommendedColorRef = useRef<BubbleColor | null>(null);
-  const aiProviderRef = useRef<AiProvider>('gemini');
+  const aiProviderRef = useRef<AiProvider>('openai');
   const aiModelOverrideRef = useRef<string>('');
   const availableColorsRef = useRef<BubbleColor[]>([]);
   const controllerCursorRef = useRef<Point>({ x: 0, y: 0 });
   const controllerStatusRef = useRef<string>('Controller inactive');
   const gamepadButtonEdgeRef = useRef({ prevColor: false, nextColor: false });
+  const preferredGamepadIndexRef = useRef<number | null>(null);
+  const controllerSeenOnceRef = useRef<boolean>(false);
   const xrSessionRef = useRef<any>(null);
   
   // AI Request Trigger
@@ -98,7 +100,7 @@ const GeminiSlingshot: React.FC = () => {
   const [availableColors, setAvailableColors] = useState<BubbleColor[]>([]);
   const [aiRecommendedColor, setAiRecommendedColor] = useState<BubbleColor | null>(null);
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
-  const [aiProvider, setAiProvider] = useState<AiProvider>('gemini');
+  const [aiProvider, setAiProvider] = useState<AiProvider>('openai');
   const [aiModelOverride, setAiModelOverride] = useState('');
   const [inputMode, setInputMode] = useState<InputMode>('controller');
   const [inputStatus, setInputStatus] = useState('Controller inactive');
@@ -169,6 +171,18 @@ const GeminiSlingshot: React.FC = () => {
     setSelectedColor(active[nextIndex]);
   }, []);
 
+  const wakeControllerScan = useCallback(() => {
+    try {
+      window.focus();
+      if (typeof navigator.getGamepads === 'function') {
+        navigator.getGamepads();
+      }
+    } catch {
+      // ignore
+    }
+    setControllerStatus('Controller scan requested. Press trigger/any button.');
+  }, [setControllerStatus]);
+
   useEffect(() => {
     const xr = (navigator as any).xr;
     if (!xr || typeof xr.isSessionSupported !== 'function') {
@@ -220,7 +234,7 @@ const GeminiSlingshot: React.FC = () => {
     if (inputMode === 'gesture') {
       setControllerStatus('Gesture mode active');
     } else {
-      setControllerStatus('Waiting for controller...');
+      setControllerStatus('Waiting for controller... press trigger/any button');
     }
   }, [inputMode, setControllerStatus]);
 
@@ -547,30 +561,34 @@ const GeminiSlingshot: React.FC = () => {
       }
 
       if (typeof navigator.getGamepads === 'function') {
-        const pads = navigator.getGamepads();
-        for (const pad of pads) {
-          if (!pad) continue;
-          // Some browsers/controllers report connected late; if shape exists, treat it as usable.
-          const hasShape = (pad.axes?.length || 0) > 0 || (pad.buttons?.length || 0) > 0;
-          if (pad.connected || hasShape) return pad;
+        const pads = Array.from(navigator.getGamepads()).filter(Boolean) as Gamepad[];
+        if (pads.length === 0) return null;
+
+        if (preferredGamepadIndexRef.current !== null) {
+          const preferred = pads.find(p => p.index === preferredGamepadIndexRef.current);
+          if (preferred) return preferred;
         }
+
+        const connectedPad = pads.find(p => p.connected);
+        if (connectedPad) return connectedPad;
+
+        // Quest browser can keep connected=false until first hardware event.
+        return pads[0] || null;
       }
 
       return null;
     };
 
-    const handleGamepadConnected = (event: Event) => {
-      const gp = (event as GamepadEvent).gamepad;
-      const label = gp?.id ? `Controller connected: ${gp.id}` : 'Controller connected';
-      setControllerStatus(label);
+    const getButtonValue = (pad: Gamepad, index: number) => {
+      const button = pad.buttons?.[index];
+      if (!button) return 0;
+      if (typeof button.value === 'number') return button.value;
+      return button.pressed ? 1 : 0;
     };
 
-    const handleGamepadDisconnected = () => {
-      setControllerStatus('Controller disconnected');
+    const isButtonPressed = (pad: Gamepad, index: number, threshold = 0.2) => {
+      return getButtonValue(pad, index) > threshold;
     };
-
-    window.addEventListener('gamepadconnected', handleGamepadConnected);
-    window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
 
     const pollControllerInput = () => {
       const pad = getPrimaryGamepad();
@@ -578,7 +596,7 @@ const GeminiSlingshot: React.FC = () => {
         gamepadButtonEdgeRef.current = { prevColor: false, nextColor: false };
         if ((navigator as any).xr && isQuestBrowser) {
           if (xrActive) {
-            setControllerStatus('Waiting for XR controller input (press trigger)');
+            setControllerStatus('No XR gamepad yet. Press trigger on controller.');
           } else {
             setControllerStatus('Press any controller button, or tap Enter XR');
           }
@@ -590,6 +608,12 @@ const GeminiSlingshot: React.FC = () => {
           cursorPos: null as Point | null,
           pinchDist: 1.0
         };
+      }
+
+      preferredGamepadIndexRef.current = pad.index;
+      const hasShape = (pad.axes?.length || 0) > 0 || (pad.buttons?.length || 0) > 0;
+      if (hasShape) {
+        controllerSeenOnceRef.current = true;
       }
 
       const label = pad.id ? `Controller connected: ${pad.id}` : 'Controller connected';
@@ -614,6 +638,13 @@ const GeminiSlingshot: React.FC = () => {
       if (Math.abs(ax) < CONTROLLER_DEADZONE) ax = 0;
       if (Math.abs(ay) < CONTROLLER_DEADZONE) ay = 0;
 
+      if (ax === 0 && ay === 0) {
+        if (isButtonPressed(pad, 14)) ax = -1;
+        if (isButtonPressed(pad, 15)) ax = 1;
+        if (isButtonPressed(pad, 12)) ay = -1;
+        if (isButtonPressed(pad, 13)) ay = 1;
+      }
+
       const stickMagnitude = Math.min(Math.sqrt(ax * ax + ay * ay), 1);
       const hasStickInput = stickMagnitude > CONTROLLER_DEADZONE;
       const normalizedX = hasStickInput ? ax / stickMagnitude : 0;
@@ -628,8 +659,8 @@ const GeminiSlingshot: React.FC = () => {
       controllerCursorRef.current = dragPoint;
 
       // Avoid trigger/squeeze indices here to prevent accidental color switching.
-      const prevColorPressed = Boolean(pad.buttons[14]?.pressed || pad.buttons[4]?.pressed);
-      const nextColorPressed = Boolean(pad.buttons[15]?.pressed || pad.buttons[5]?.pressed);
+      const prevColorPressed = isButtonPressed(pad, 4);
+      const nextColorPressed = isButtonPressed(pad, 5);
       if (prevColorPressed && !gamepadButtonEdgeRef.current.prevColor) {
         cycleSelectedColor(-1);
       }
@@ -641,16 +672,11 @@ const GeminiSlingshot: React.FC = () => {
         nextColor: nextColorPressed
       };
 
-      const launchPressed = Boolean(
-        pad.buttons[1]?.pressed ||
-        (pad.buttons[1]?.value ?? 0) > 0.2 ||
-        pad.buttons[0]?.pressed ||
-        (pad.buttons[0]?.value ?? 0) > 0.2 ||
-        pad.buttons[6]?.pressed ||
-        (pad.buttons[6]?.value ?? 0) > 0.2 ||
-        pad.buttons[7]?.pressed ||
-        (pad.buttons[7]?.value ?? 0) > 0.2
-      );
+      const launchPressed =
+        isButtonPressed(pad, 0) ||
+        isButtonPressed(pad, 1) ||
+        isButtonPressed(pad, 6) ||
+        isButtonPressed(pad, 7);
 
       return {
         handPos: launchPressed ? { ...controllerCursorRef.current } : null,
@@ -658,6 +684,26 @@ const GeminiSlingshot: React.FC = () => {
         pinchDist: launchPressed ? 0.0 : 1.0
       };
     };
+
+    const handleGamepadConnected = (event: Event) => {
+      const gp = (event as GamepadEvent).gamepad;
+      if (gp) {
+        preferredGamepadIndexRef.current = gp.index;
+      }
+      const label = gp?.id ? `Controller connected: ${gp.id}` : 'Controller connected';
+      setControllerStatus(label);
+    };
+
+    const handleGamepadDisconnected = (event: Event) => {
+      const gp = (event as GamepadEvent).gamepad;
+      if (gp && preferredGamepadIndexRef.current === gp.index) {
+        preferredGamepadIndexRef.current = null;
+      }
+      setControllerStatus('Controller disconnected');
+    };
+
+    window.addEventListener('gamepadconnected', handleGamepadConnected);
+    window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
 
     const renderFrame = (results?: any, deltaMs = 16) => {
       if (!didClearLoading) {
@@ -1137,6 +1183,12 @@ const GeminiSlingshot: React.FC = () => {
                     >
                         Gesture
                     </button>
+                    <button
+                        onClick={wakeControllerScan}
+                        className="px-3 py-2 rounded-lg text-xs font-bold border border-[#444746] text-[#c4c7c5] bg-[#2a2a2a]"
+                    >
+                        Wake Pad
+                    </button>
                     {xrActive ? (
                         <button
                             onClick={stopVrSession}
@@ -1268,7 +1320,7 @@ const GeminiSlingshot: React.FC = () => {
                     <input
                         value={aiModelOverride}
                         onChange={(e) => setAiModelOverride(e.target.value)}
-                        placeholder="Use default model"
+                        placeholder="Default: gpt-5-mini"
                         className="bg-[#121212] border border-[#444746] rounded px-2 py-1 text-xs text-[#e3e3e3]"
                     />
                 </label>

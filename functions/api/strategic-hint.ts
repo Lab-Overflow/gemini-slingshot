@@ -14,7 +14,7 @@ const PROVIDERS: AiProvider[] = ['gemini', 'openai', 'anthropic'];
 
 const DEFAULT_MODELS: Record<AiProvider, string> = {
   gemini: 'gemini-1.5-flash',
-  openai: 'gpt-4.1-mini',
+  openai: 'gpt-5-mini',
   anthropic: 'claude-3-5-sonnet-latest'
 };
 
@@ -281,7 +281,7 @@ const fetchAnthropic = async (apiKey: string, model: string, prompt: string, ima
 };
 
 const resolveProvider = (env: Env, requested?: string): AiProvider => {
-  const lower = String(requested || env.DEFAULT_AI_PROVIDER || 'gemini').toLowerCase();
+  const lower = String(requested || env.DEFAULT_AI_PROVIDER || 'openai').toLowerCase();
   if (PROVIDERS.includes(lower as AiProvider)) {
     return lower as AiProvider;
   }
