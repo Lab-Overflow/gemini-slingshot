@@ -688,15 +688,6 @@ const GeminiSlingshot: React.FC = () => {
         const pointer = controllerPointerRef.current;
         handPos = pointer.isDown ? { ...pointer.position } : null;
         pinchDist = pointer.isDown ? 0.0 : 1.0;
-        const cursorPos = pointer.position;
-
-        if (cursorPos) {
-          ctx.beginPath();
-          ctx.arc(cursorPos.x, cursorPos.y, 18, 0, Math.PI * 2);
-          ctx.strokeStyle = handPos ? '#42a5f5' : 'rgba(255,255,255,0.65)';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
       }
 
       const isHoldingLaunch = handPos && pinchDist < PINCH_THRESHOLD;
@@ -1063,7 +1054,7 @@ const GeminiSlingshot: React.FC = () => {
         <canvas
           ref={canvasRef}
           className="absolute inset-0"
-          style={inputMode === 'controller' ? { cursor: 'crosshair', touchAction: 'none' } : undefined}
+          style={inputMode === 'controller' ? { cursor: 'crosshair', touchAction: 'none', transform: 'none' } : undefined}
         />
 
         {/* Loading Overlay */}
