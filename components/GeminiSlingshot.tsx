@@ -82,6 +82,7 @@ const GeminiSlingshot: React.FC = () => {
   const preferredGamepadIndexRef = useRef<number | null>(null);
   const controllerSeenOnceRef = useRef<boolean>(false);
   const xrSessionRef = useRef<any>(null);
+  const inlineXrSessionRef = useRef<any>(null);
   
   // AI Request Trigger
   const captureRequestRef = useRef<boolean>(false);
@@ -171,7 +172,25 @@ const GeminiSlingshot: React.FC = () => {
     setSelectedColor(active[nextIndex]);
   }, []);
 
-  const wakeControllerScan = useCallback(() => {
+  const ensureInlineXrSession = useCallback(async () => {
+    if (inlineXrSessionRef.current || xrSessionRef.current) return true;
+    const xr = (navigator as any).xr;
+    if (!xr || typeof xr.requestSession !== 'function') return false;
+
+    try {
+      const inlineSession = await xr.requestSession('inline');
+      inlineXrSessionRef.current = inlineSession;
+      inlineSession.addEventListener('end', () => {
+        inlineXrSessionRef.current = null;
+      });
+      return true;
+    } catch (error) {
+      console.warn('Inline XR session failed:', error);
+      return false;
+    }
+  }, []);
+
+  const wakeControllerScan = useCallback(async () => {
     try {
       window.focus();
       if (typeof navigator.getGamepads === 'function') {
@@ -181,7 +200,12 @@ const GeminiSlingshot: React.FC = () => {
       // ignore
     }
     setControllerStatus('Controller scan requested. Press trigger/any button.');
-  }, [setControllerStatus]);
+
+    const activated = await ensureInlineXrSession();
+    if (activated) {
+      setControllerStatus('Controller scan active (inline XR). Press trigger now.');
+    }
+  }, [setControllerStatus, ensureInlineXrSession]);
 
   useEffect(() => {
     const xr = (navigator as any).xr;
@@ -202,6 +226,10 @@ const GeminiSlingshot: React.FC = () => {
     }
 
     try {
+      if (inlineXrSessionRef.current) {
+        await inlineXrSessionRef.current.end();
+        inlineXrSessionRef.current = null;
+      }
       const session = await xr.requestSession('immersive-vr', {
         optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
       });
@@ -242,6 +270,9 @@ const GeminiSlingshot: React.FC = () => {
     return () => {
       if (xrSessionRef.current) {
         xrSessionRef.current.end().catch(() => {});
+      }
+      if (inlineXrSessionRef.current) {
+        inlineXrSessionRef.current.end().catch(() => {});
       }
     };
   }, []);
@@ -556,6 +587,13 @@ const GeminiSlingshot: React.FC = () => {
       const xrSession = xrSessionRef.current;
       if (xrSession?.inputSources) {
         for (const source of xrSession.inputSources) {
+          if (source?.gamepad) return source.gamepad as Gamepad;
+        }
+      }
+
+      const inlineSession = inlineXrSessionRef.current;
+      if (inlineSession?.inputSources) {
+        for (const source of inlineSession.inputSources) {
           if (source?.gamepad) return source.gamepad as Gamepad;
         }
       }
@@ -1092,6 +1130,10 @@ const GeminiSlingshot: React.FC = () => {
       }
       window.removeEventListener('gamepadconnected', handleGamepadConnected);
       window.removeEventListener('gamepaddisconnected', handleGamepadDisconnected);
+      if (inlineXrSessionRef.current) {
+        inlineXrSessionRef.current.end().catch(() => {});
+        inlineXrSessionRef.current = null;
+      }
       if (camera) camera.stop();
       if (hands) hands.close();
     };
