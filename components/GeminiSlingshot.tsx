@@ -80,7 +80,6 @@ const GeminiSlingshot: React.FC = () => {
   });
   const controllerStatusRef = useRef<string>('Controller inactive');
   const xrSessionRef = useRef<any>(null);
-  const inlineXrSessionRef = useRef<any>(null);
   
   // AI Request Trigger
   const captureRequestRef = useRef<boolean>(false);
@@ -164,41 +163,6 @@ const GeminiSlingshot: React.FC = () => {
     setInputStatus(status);
   }, []);
 
-  const ensureInlineXrSession = useCallback(async () => {
-    if (inlineXrSessionRef.current || xrSessionRef.current) return true;
-    const xr = (navigator as any).xr;
-    if (!xr || typeof xr.requestSession !== 'function') return false;
-
-    try {
-      const inlineSession = await xr.requestSession('inline');
-      inlineXrSessionRef.current = inlineSession;
-      inlineSession.addEventListener('end', () => {
-        inlineXrSessionRef.current = null;
-      });
-      return true;
-    } catch (error) {
-      console.warn('Inline XR session failed:', error);
-      return false;
-    }
-  }, []);
-
-  const wakeControllerScan = useCallback(async () => {
-    try {
-      window.focus();
-      if (typeof navigator.getGamepads === 'function') {
-        navigator.getGamepads();
-      }
-    } catch {
-      // ignore
-    }
-    setControllerStatus('Controller scan requested. Press trigger/any button.');
-
-    const activated = await ensureInlineXrSession();
-    if (activated) {
-      setControllerStatus('Controller scan active (inline XR). Press trigger now.');
-    }
-  }, [setControllerStatus, ensureInlineXrSession]);
-
   useEffect(() => {
     const xr = (navigator as any).xr;
     if (!xr || typeof xr.isSessionSupported !== 'function') {
@@ -218,10 +182,6 @@ const GeminiSlingshot: React.FC = () => {
     }
 
     try {
-      if (inlineXrSessionRef.current) {
-        await inlineXrSessionRef.current.end();
-        inlineXrSessionRef.current = null;
-      }
       const session = await xr.requestSession('immersive-vr', {
         optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
       });
@@ -278,9 +238,6 @@ const GeminiSlingshot: React.FC = () => {
     return () => {
       if (xrSessionRef.current) {
         xrSessionRef.current.end().catch(() => {});
-      }
-      if (inlineXrSessionRef.current) {
-        inlineXrSessionRef.current.end().catch(() => {});
       }
     };
   }, []);
@@ -1047,10 +1004,6 @@ const GeminiSlingshot: React.FC = () => {
       canvas.removeEventListener('pointermove', handlePointerMove);
       canvas.removeEventListener('pointerup', releasePointer);
       canvas.removeEventListener('pointercancel', cancelPointer);
-      if (inlineXrSessionRef.current) {
-        inlineXrSessionRef.current.end().catch(() => {});
-        inlineXrSessionRef.current = null;
-      }
       if (camera) camera.stop();
       if (hands) hands.close();
     };
@@ -1151,12 +1104,6 @@ const GeminiSlingshot: React.FC = () => {
                         }`}
                     >
                         Gesture
-                    </button>
-                    <button
-                        onClick={wakeControllerScan}
-                        className="px-3 py-2 rounded-lg text-xs font-bold border border-[#444746] text-[#c4c7c5] bg-[#2a2a2a]"
-                    >
-                        Wake Pad
                     </button>
                     {xrActive ? (
                         <button
