@@ -1,0 +1,8 @@
+name = "calculatorcaloriefree-game-proxy"
+main = "workers/game-proxy.ts"
+compatibility_date = "2026-04-24"
+
+routes = [
+  { pattern = "calculatorcaloriefree.com/game*", zone_name = "calculatorcaloriefree.com" },
+  { pattern = "www.calculatorcaloriefree.com/game*", zone_name = "calculatorcaloriefree.com" }
+]
