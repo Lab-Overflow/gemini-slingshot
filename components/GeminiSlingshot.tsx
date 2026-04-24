@@ -553,12 +553,16 @@ const GeminiSlingshot: React.FC = () => {
       return null;
     };
 
-    const pollControllerInput = (deltaMs: number) => {
+    const pollControllerInput = () => {
       const pad = getPrimaryGamepad();
       if (!pad) {
         gamepadButtonEdgeRef.current = { prevColor: false, nextColor: false };
         setControllerStatus('Waiting for controller...');
-        return { handPos: null as Point | null, pinchDist: 1.0 };
+        return {
+          handPos: null as Point | null,
+          cursorPos: null as Point | null,
+          pinchDist: 1.0
+        };
       }
 
       const label = pad.id ? `Controller connected: ${pad.id}` : 'Controller connected';
@@ -567,26 +571,38 @@ const GeminiSlingshot: React.FC = () => {
       const axisCandidates: Array<[number, number]> = [[2, 3], [0, 1]];
       let ax = 0;
       let ay = 0;
+      let bestMagnitude = 0;
       for (const [xIndex, yIndex] of axisCandidates) {
         if (pad.axes.length <= Math.max(xIndex, yIndex)) continue;
         const candidateX = pad.axes[xIndex] ?? 0;
         const candidateY = pad.axes[yIndex] ?? 0;
-        if (Math.abs(candidateX) > CONTROLLER_DEADZONE || Math.abs(candidateY) > CONTROLLER_DEADZONE) {
+        const magnitude = Math.sqrt(candidateX * candidateX + candidateY * candidateY);
+        if (magnitude > bestMagnitude) {
           ax = candidateX;
           ay = candidateY;
-          break;
+          bestMagnitude = magnitude;
         }
       }
 
       if (Math.abs(ax) < CONTROLLER_DEADZONE) ax = 0;
       if (Math.abs(ay) < CONTROLLER_DEADZONE) ay = 0;
 
-      const speed = Math.max(deltaMs, 8) * CONTROLLER_CURSOR_SPEED;
-      controllerCursorRef.current.x = clamp(controllerCursorRef.current.x + ax * speed, 0, canvas.width);
-      controllerCursorRef.current.y = clamp(controllerCursorRef.current.y + ay * speed, 0, canvas.height);
+      const stickMagnitude = Math.min(Math.sqrt(ax * ax + ay * ay), 1);
+      const hasStickInput = stickMagnitude > CONTROLLER_DEADZONE;
+      const normalizedX = hasStickInput ? ax / stickMagnitude : 0;
+      const normalizedY = hasStickInput ? ay / stickMagnitude : -1;
+      const pullPower = hasStickInput ? stickMagnitude : 0.35;
 
-      const prevColorPressed = Boolean(pad.buttons[4]?.pressed || pad.buttons[2]?.pressed);
-      const nextColorPressed = Boolean(pad.buttons[5]?.pressed || pad.buttons[3]?.pressed);
+      // The stick indicates shooting direction, so we invert it to calculate drag point.
+      const dragPoint = {
+        x: clamp(anchorPos.current.x - normalizedX * MAX_DRAG_DIST * pullPower, 0, canvas.width),
+        y: clamp(anchorPos.current.y - normalizedY * MAX_DRAG_DIST * pullPower, 0, canvas.height)
+      };
+      controllerCursorRef.current = dragPoint;
+
+      // Avoid trigger/squeeze indices here to prevent accidental color switching.
+      const prevColorPressed = Boolean(pad.buttons[14]?.pressed || pad.buttons[4]?.pressed);
+      const nextColorPressed = Boolean(pad.buttons[15]?.pressed || pad.buttons[5]?.pressed);
       if (prevColorPressed && !gamepadButtonEdgeRef.current.prevColor) {
         cycleSelectedColor(-1);
       }
@@ -599,14 +615,19 @@ const GeminiSlingshot: React.FC = () => {
       };
 
       const launchPressed = Boolean(
+        pad.buttons[1]?.pressed ||
+        (pad.buttons[1]?.value ?? 0) > 0.2 ||
         pad.buttons[0]?.pressed ||
         (pad.buttons[0]?.value ?? 0) > 0.2 ||
-        pad.buttons[1]?.pressed ||
-        (pad.buttons[1]?.value ?? 0) > 0.2
+        pad.buttons[6]?.pressed ||
+        (pad.buttons[6]?.value ?? 0) > 0.2 ||
+        pad.buttons[7]?.pressed ||
+        (pad.buttons[7]?.value ?? 0) > 0.2
       );
 
       return {
-        handPos: { ...controllerCursorRef.current },
+        handPos: launchPressed ? { ...controllerCursorRef.current } : null,
+        cursorPos: { ...controllerCursorRef.current },
         pinchDist: launchPressed ? 0.0 : 1.0
       };
     };
@@ -665,14 +686,15 @@ const GeminiSlingshot: React.FC = () => {
         }
       } else {
         requiresProximity = false;
-        const controllerInput = pollControllerInput(deltaMs);
+        const controllerInput = pollControllerInput();
         handPos = controllerInput.handPos;
         pinchDist = controllerInput.pinchDist;
+        const cursorPos = controllerInput.cursorPos;
 
-        if (handPos) {
+        if (cursorPos) {
           ctx.beginPath();
-          ctx.arc(handPos.x, handPos.y, 18, 0, Math.PI * 2);
-          ctx.strokeStyle = pinchDist < PINCH_THRESHOLD ? '#42a5f5' : 'rgba(255,255,255,0.65)';
+          ctx.arc(cursorPos.x, cursorPos.y, 18, 0, Math.PI * 2);
+          ctx.strokeStyle = handPos ? '#42a5f5' : 'rgba(255,255,255,0.65)';
           ctx.lineWidth = 2;
           ctx.stroke();
         }
