@@ -21,9 +21,6 @@ const SLINGSHOT_BOTTOM_OFFSET = 220;
 const MAX_DRAG_DIST = 180;
 const MIN_FORCE_MULT = 0.15;
 const MAX_FORCE_MULT = 0.45;
-const CONTROLLER_DEADZONE = 0.14;
-const CONTROLLER_CURSOR_SPEED = 0.28;
-const QUEST_BROWSER_PATTERN = /OculusBrowser|Quest/i;
 
 type InputMode = 'gesture' | 'controller';
 
@@ -77,11 +74,11 @@ const GeminiSlingshot: React.FC = () => {
   const aiModelOverrideRef = useRef<string>('');
   const inputModeRef = useRef<InputMode>('controller');
   const availableColorsRef = useRef<BubbleColor[]>([]);
-  const controllerCursorRef = useRef<Point>({ x: 0, y: 0 });
+  const controllerPointerRef = useRef<{ position: Point; isDown: boolean }>({
+    position: { x: 0, y: 0 },
+    isDown: false
+  });
   const controllerStatusRef = useRef<string>('Controller inactive');
-  const gamepadButtonEdgeRef = useRef({ prevColor: false, nextColor: false });
-  const preferredGamepadIndexRef = useRef<number | null>(null);
-  const controllerSeenOnceRef = useRef<boolean>(false);
   const xrSessionRef = useRef<any>(null);
   const inlineXrSessionRef = useRef<any>(null);
   
@@ -165,16 +162,6 @@ const GeminiSlingshot: React.FC = () => {
     if (controllerStatusRef.current === status) return;
     controllerStatusRef.current = status;
     setInputStatus(status);
-  }, []);
-
-  const cycleSelectedColor = useCallback((direction: 1 | -1) => {
-    const active = COLOR_KEYS.filter(color => availableColorsRef.current.includes(color));
-    if (active.length <= 1) return;
-
-    const currentIndex = active.indexOf(selectedColorRef.current);
-    const start = currentIndex === -1 ? 0 : currentIndex;
-    const nextIndex = (start + direction + active.length) % active.length;
-    setSelectedColor(active[nextIndex]);
   }, []);
 
   const ensureInlineXrSession = useCallback(async () => {
@@ -264,6 +251,7 @@ const GeminiSlingshot: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    controllerPointerRef.current.isDown = false;
     if (inputMode === 'gesture') {
       setControllerStatus('Gesture mode active');
       setAiHint('Gesture mode: AI strategy enabled.');
@@ -275,8 +263,8 @@ const GeminiSlingshot: React.FC = () => {
       isAiThinkingRef.current = false;
       captureRequestRef.current = true;
     } else {
-      setControllerStatus('Waiting for controller... press trigger/any button');
-      setAiHint('Controller mode: manual play (AI disabled).');
+      setControllerStatus('Mouse drag mode active');
+      setAiHint('Controller mode: manual mouse drag (AI disabled).');
       setAiRationale(null);
       setAiRecommendedColor(null);
       setAimTarget(null);
@@ -590,15 +578,15 @@ const GeminiSlingshot: React.FC = () => {
       if (!isFlying.current && !isPinching.current) {
         ballPos.current = { ...anchorPos.current };
       }
-      if (!controllerCursorRef.current.x && !controllerCursorRef.current.y) {
-        controllerCursorRef.current = { ...anchorPos.current };
+      if (!controllerPointerRef.current.position.x && !controllerPointerRef.current.position.y) {
+        controllerPointerRef.current.position = { ...anchorPos.current };
       }
     };
 
     resizeCanvas();
     anchorPos.current = { x: canvas.width / 2, y: canvas.height - SLINGSHOT_BOTTOM_OFFSET };
     ballPos.current = { ...anchorPos.current };
-    controllerCursorRef.current = { ...anchorPos.current };
+    controllerPointerRef.current.position = { ...anchorPos.current };
 
     initGrid(canvas.width);
 
@@ -607,161 +595,62 @@ const GeminiSlingshot: React.FC = () => {
     let rafId = 0;
     let didClearLoading = false;
 
-    const isQuestBrowser = QUEST_BROWSER_PATTERN.test(navigator.userAgent);
-
-    const getPrimaryGamepad = (): Gamepad | null => {
-      const xrSession = xrSessionRef.current;
-      if (xrSession?.inputSources) {
-        for (const source of xrSession.inputSources) {
-          if (source?.gamepad) return source.gamepad as Gamepad;
-        }
-      }
-
-      const inlineSession = inlineXrSessionRef.current;
-      if (inlineSession?.inputSources) {
-        for (const source of inlineSession.inputSources) {
-          if (source?.gamepad) return source.gamepad as Gamepad;
-        }
-      }
-
-      if (typeof navigator.getGamepads === 'function') {
-        const pads = Array.from(navigator.getGamepads()).filter(Boolean) as Gamepad[];
-        if (pads.length === 0) return null;
-
-        if (preferredGamepadIndexRef.current !== null) {
-          const preferred = pads.find(p => p.index === preferredGamepadIndexRef.current);
-          if (preferred) return preferred;
-        }
-
-        const connectedPad = pads.find(p => p.connected);
-        if (connectedPad) return connectedPad;
-
-        // Quest browser can keep connected=false until first hardware event.
-        return pads[0] || null;
-      }
-
-      return null;
-    };
-
-    const getButtonValue = (pad: Gamepad, index: number) => {
-      const button = pad.buttons?.[index];
-      if (!button) return 0;
-      if (typeof button.value === 'number') return button.value;
-      return button.pressed ? 1 : 0;
-    };
-
-    const isButtonPressed = (pad: Gamepad, index: number, threshold = 0.2) => {
-      return getButtonValue(pad, index) > threshold;
-    };
-
-    const pollControllerInput = (deltaMs: number) => {
-      const pad = getPrimaryGamepad();
-      if (!pad) {
-        gamepadButtonEdgeRef.current = { prevColor: false, nextColor: false };
-        if ((navigator as any).xr && isQuestBrowser) {
-          if (xrActive) {
-            setControllerStatus('No XR gamepad yet. Press trigger on controller.');
-          } else {
-            setControllerStatus('Press any controller button, or tap Enter XR');
-          }
-        } else {
-          setControllerStatus('Waiting for controller... press any button');
-        }
-        return {
-          handPos: null as Point | null,
-          cursorPos: null as Point | null,
-          pinchDist: 1.0
-        };
-      }
-
-      preferredGamepadIndexRef.current = pad.index;
-      const hasShape = (pad.axes?.length || 0) > 0 || (pad.buttons?.length || 0) > 0;
-      if (hasShape) {
-        controllerSeenOnceRef.current = true;
-      }
-
-      const label = pad.id ? `Controller connected: ${pad.id}` : 'Controller connected';
-      setControllerStatus(label);
-
-      const axisCandidates: Array<[number, number]> = [[2, 3], [0, 1]];
-      let ax = 0;
-      let ay = 0;
-      let bestMagnitude = 0;
-      for (const [xIndex, yIndex] of axisCandidates) {
-        if (pad.axes.length <= Math.max(xIndex, yIndex)) continue;
-        const candidateX = pad.axes[xIndex] ?? 0;
-        const candidateY = pad.axes[yIndex] ?? 0;
-        const magnitude = Math.sqrt(candidateX * candidateX + candidateY * candidateY);
-        if (magnitude > bestMagnitude) {
-          ax = candidateX;
-          ay = candidateY;
-          bestMagnitude = magnitude;
-        }
-      }
-
-      if (Math.abs(ax) < CONTROLLER_DEADZONE) ax = 0;
-      if (Math.abs(ay) < CONTROLLER_DEADZONE) ay = 0;
-
-      if (ax === 0 && ay === 0) {
-        if (isButtonPressed(pad, 14)) ax = -1;
-        if (isButtonPressed(pad, 15)) ax = 1;
-        if (isButtonPressed(pad, 12)) ay = -1;
-        if (isButtonPressed(pad, 13)) ay = 1;
-      }
-
-      const elapsedMs = Math.max(8, Math.min(deltaMs, 34));
-      const moveStep = Math.max(canvas.width, canvas.height) * CONTROLLER_CURSOR_SPEED * (elapsedMs / 1000);
-      controllerCursorRef.current = {
-        x: clamp(controllerCursorRef.current.x + ax * moveStep, 0, canvas.width),
-        y: clamp(controllerCursorRef.current.y + ay * moveStep, 0, canvas.height)
-      };
-
-      // Avoid trigger/squeeze indices here to prevent accidental color switching.
-      const prevColorPressed = isButtonPressed(pad, 4);
-      const nextColorPressed = isButtonPressed(pad, 5);
-      if (prevColorPressed && !gamepadButtonEdgeRef.current.prevColor) {
-        cycleSelectedColor(-1);
-      }
-      if (nextColorPressed && !gamepadButtonEdgeRef.current.nextColor) {
-        cycleSelectedColor(1);
-      }
-      gamepadButtonEdgeRef.current = {
-        prevColor: prevColorPressed,
-        nextColor: nextColorPressed
-      };
-
-      const launchPressed =
-        isButtonPressed(pad, 0) ||
-        isButtonPressed(pad, 1) ||
-        isButtonPressed(pad, 6) ||
-        isButtonPressed(pad, 7);
-
+    const getCanvasPoint = (event: PointerEvent): Point => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
       return {
-        handPos: launchPressed ? { ...controllerCursorRef.current } : null,
-        cursorPos: { ...controllerCursorRef.current },
-        pinchDist: launchPressed ? 0.0 : 1.0
+        x: clamp((event.clientX - rect.left) * scaleX, 0, canvas.width),
+        y: clamp((event.clientY - rect.top) * scaleY, 0, canvas.height)
       };
     };
 
-    const handleGamepadConnected = (event: Event) => {
-      const gp = (event as GamepadEvent).gamepad;
-      if (gp) {
-        preferredGamepadIndexRef.current = gp.index;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (inputModeRef.current !== 'controller') return;
+      event.preventDefault();
+
+      const position = getCanvasPoint(event);
+      controllerPointerRef.current.position = position;
+
+      const dx = position.x - ballPos.current.x;
+      const dy = position.y - ballPos.current.y;
+      const canGrab = !isFlying.current && !isAiThinkingRef.current && Math.sqrt(dx * dx + dy * dy) < 100;
+
+      if (canGrab) {
+        controllerPointerRef.current.isDown = true;
+        canvas.setPointerCapture?.(event.pointerId);
+        setControllerStatus('Dragging ball');
+      } else {
+        controllerPointerRef.current.isDown = false;
+        setControllerStatus('Click near the ball to drag');
       }
-      const label = gp?.id ? `Controller connected: ${gp.id}` : 'Controller connected';
-      setControllerStatus(label);
     };
 
-    const handleGamepadDisconnected = (event: Event) => {
-      const gp = (event as GamepadEvent).gamepad;
-      if (gp && preferredGamepadIndexRef.current === gp.index) {
-        preferredGamepadIndexRef.current = null;
-      }
-      setControllerStatus('Controller disconnected');
+    const handlePointerMove = (event: PointerEvent) => {
+      if (inputModeRef.current !== 'controller') return;
+      controllerPointerRef.current.position = getCanvasPoint(event);
     };
 
-    window.addEventListener('gamepadconnected', handleGamepadConnected);
-    window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
+    const releasePointer = (event: PointerEvent) => {
+      if (inputModeRef.current !== 'controller') return;
+      event.preventDefault();
+      controllerPointerRef.current.position = getCanvasPoint(event);
+      controllerPointerRef.current.isDown = false;
+      if (canvas.hasPointerCapture?.(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+      setControllerStatus('Mouse drag mode active');
+    };
+
+    const cancelPointer = () => {
+      controllerPointerRef.current.isDown = false;
+      setControllerStatus('Mouse drag mode active');
+    };
+
+    canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('pointermove', handlePointerMove);
+    canvas.addEventListener('pointerup', releasePointer);
+    canvas.addEventListener('pointercancel', cancelPointer);
 
     const renderFrame = (results?: any, deltaMs = 16) => {
       if (!didClearLoading) {
@@ -816,10 +705,10 @@ const GeminiSlingshot: React.FC = () => {
           ctx.stroke();
         }
       } else {
-        const controllerInput = pollControllerInput(deltaMs);
-        handPos = controllerInput.handPos;
-        pinchDist = controllerInput.pinchDist;
-        const cursorPos = controllerInput.cursorPos;
+        const pointer = controllerPointerRef.current;
+        handPos = pointer.isDown ? { ...pointer.position } : null;
+        pinchDist = pointer.isDown ? 0.0 : 1.0;
+        const cursorPos = pointer.position;
 
         if (cursorPos) {
           ctx.beginPath();
@@ -1154,8 +1043,10 @@ const GeminiSlingshot: React.FC = () => {
       if (rafId) {
         window.cancelAnimationFrame(rafId);
       }
-      window.removeEventListener('gamepadconnected', handleGamepadConnected);
-      window.removeEventListener('gamepaddisconnected', handleGamepadDisconnected);
+      canvas.removeEventListener('pointerdown', handlePointerDown);
+      canvas.removeEventListener('pointermove', handlePointerMove);
+      canvas.removeEventListener('pointerup', releasePointer);
+      canvas.removeEventListener('pointercancel', cancelPointer);
       if (inlineXrSessionRef.current) {
         inlineXrSessionRef.current.end().catch(() => {});
         inlineXrSessionRef.current = null;
@@ -1163,7 +1054,7 @@ const GeminiSlingshot: React.FC = () => {
       if (camera) camera.stop();
       if (hands) hands.close();
     };
-  }, [initGrid, inputMode, cycleSelectedColor, setControllerStatus, xrActive]);
+  }, [initGrid, inputMode, setControllerStatus]);
 
   const recColorConfig = aiRecommendedColor ? COLOR_CONFIG[aiRecommendedColor] : null;
   const borderColor = recColorConfig ? recColorConfig.hex : '#444746';
@@ -1193,7 +1084,11 @@ const GeminiSlingshot: React.FC = () => {
       {/* LEFT: Game Area */}
       <div ref={gameContainerRef} className="flex-1 relative h-full overflow-hidden">
         <video ref={videoRef} className="absolute hidden" playsInline />
-        <canvas ref={canvasRef} className="absolute inset-0" />
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0"
+          style={inputMode === 'controller' ? { cursor: 'crosshair', touchAction: 'none' } : undefined}
+        />
 
         {/* Loading Overlay */}
         {loading && (
@@ -1335,7 +1230,7 @@ const GeminiSlingshot: React.FC = () => {
                 <div className="flex items-center gap-2 bg-[#1e1e1e]/90 px-4 py-2 rounded-full border border-[#444746] backdrop-blur-sm">
                     <Play className="w-3 h-3 text-[#42a5f5] fill-current" />
                         <p className="text-[#e3e3e3] text-xs font-medium">
-                          {inputMode === 'controller' ? 'Use stick to move cursor, hold trigger to drag, release to shoot' : 'Pinch & Pull to Shoot'}
+                          {inputMode === 'controller' ? 'Click and drag the ball, release to shoot' : 'Pinch & Pull to Shoot'}
                         </p>
                 </div>
             </div>
