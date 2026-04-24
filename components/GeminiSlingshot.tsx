@@ -22,7 +22,7 @@ const MAX_DRAG_DIST = 180;
 const MIN_FORCE_MULT = 0.15;
 const MAX_FORCE_MULT = 0.45;
 
-type InputMode = 'gesture' | 'controller';
+type InputMode = 'gesture' | 'controller' | 'xr-hand';
 
 // Material Design Colors & Scoring Strategy
 const COLOR_CONFIG: Record<BubbleColor, { hex: string, points: number, label: string }> = {
@@ -80,7 +80,13 @@ const GeminiSlingshot: React.FC = () => {
   });
   const controllerStatusRef = useRef<string>('Controller inactive');
   const xrSessionRef = useRef<any>(null);
-  const inlineXrSessionRef = useRef<any>(null);
+  const xrRefSpaceRef = useRef<any>(null);
+  const xrFrameCallbackIdRef = useRef<number | null>(null);
+  const xrHandDataRef = useRef<{ position: Point; pinchDist: number; present: boolean }>({
+    position: { x: 0, y: 0 },
+    pinchDist: 1.0,
+    present: false
+  });
   
   // AI Request Trigger
   const captureRequestRef = useRef<boolean>(false);
@@ -164,41 +170,6 @@ const GeminiSlingshot: React.FC = () => {
     setInputStatus(status);
   }, []);
 
-  const ensureInlineXrSession = useCallback(async () => {
-    if (inlineXrSessionRef.current || xrSessionRef.current) return true;
-    const xr = (navigator as any).xr;
-    if (!xr || typeof xr.requestSession !== 'function') return false;
-
-    try {
-      const inlineSession = await xr.requestSession('inline');
-      inlineXrSessionRef.current = inlineSession;
-      inlineSession.addEventListener('end', () => {
-        inlineXrSessionRef.current = null;
-      });
-      return true;
-    } catch (error) {
-      console.warn('Inline XR session failed:', error);
-      return false;
-    }
-  }, []);
-
-  const wakeControllerScan = useCallback(async () => {
-    try {
-      window.focus();
-      if (typeof navigator.getGamepads === 'function') {
-        navigator.getGamepads();
-      }
-    } catch {
-      // ignore
-    }
-    setControllerStatus('Controller scan requested. Press trigger/any button.');
-
-    const activated = await ensureInlineXrSession();
-    if (activated) {
-      setControllerStatus('Controller scan active (inline XR). Press trigger now.');
-    }
-  }, [setControllerStatus, ensureInlineXrSession]);
-
   useEffect(() => {
     const xr = (navigator as any).xr;
     if (!xr || typeof xr.isSessionSupported !== 'function') {
@@ -218,21 +189,121 @@ const GeminiSlingshot: React.FC = () => {
     }
 
     try {
-      if (inlineXrSessionRef.current) {
-        await inlineXrSessionRef.current.end();
-        inlineXrSessionRef.current = null;
-      }
       const session = await xr.requestSession('immersive-vr', {
         optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
       });
       xrSessionRef.current = session;
+
+      // Minimal WebGL base layer so the XR session issues animation frames.
+      const xrCanvas = document.createElement('canvas');
+      const xrGl = xrCanvas.getContext('webgl', { xrCompatible: true } as any) as any;
+      if (xrGl) {
+        if (typeof xrGl.makeXRCompatible === 'function') {
+          try { await xrGl.makeXRCompatible(); } catch {}
+        }
+        const XRWebGLLayerCtor = (window as any).XRWebGLLayer;
+        if (XRWebGLLayerCtor) {
+          try {
+            session.updateRenderState({ baseLayer: new XRWebGLLayerCtor(session, xrGl) });
+          } catch (err) {
+            console.warn('Failed to set XR base layer:', err);
+          }
+        }
+      }
+
+      let refSpace: any = null;
+      let refSpaceType: 'local-floor' | 'local' | 'viewer' | null = null;
+      for (const candidate of ['local-floor', 'local', 'viewer'] as const) {
+        try {
+          refSpace = await session.requestReferenceSpace(candidate);
+          refSpaceType = candidate;
+          break;
+        } catch {
+          // try next
+        }
+      }
+      xrRefSpaceRef.current = refSpace;
+
       setXrActive(true);
-      setInputMode('controller');
-      setControllerStatus('XR session active');
+      setInputMode('xr-hand');
+      setControllerStatus('XR hand tracking active');
+
+      const XR_PINCH_THRESHOLD_M = 0.03;
+      const XR_PLANE_HALF_WIDTH = 0.25;
+      const XR_PLANE_HALF_HEIGHT = 0.25;
+      const XR_CENTER_Y = refSpaceType === 'local-floor' ? 1.3 : 0;
+
+      const onXRFrame = (_time: number, frame: any) => {
+        if (xrSessionRef.current !== session) return;
+        try {
+          xrFrameCallbackIdRef.current = session.requestAnimationFrame(onXRFrame);
+        } catch {}
+
+        const refSpaceNow = xrRefSpaceRef.current;
+        const canvas = canvasRef.current;
+        if (!refSpaceNow || !canvas || !frame) return;
+
+        let found = false;
+        for (const inputSource of session.inputSources) {
+          const hand = inputSource.hand;
+          if (!hand || typeof hand.get !== 'function') continue;
+
+          const indexJoint = hand.get('index-finger-tip');
+          const thumbJoint = hand.get('thumb-tip');
+          if (!indexJoint || !thumbJoint) continue;
+
+          const indexPose = frame.getJointPose(indexJoint, refSpaceNow);
+          const thumbPose = frame.getJointPose(thumbJoint, refSpaceNow);
+          if (!indexPose || !thumbPose) continue;
+
+          const ip = indexPose.transform.position;
+          const tp = thumbPose.transform.position;
+          const dxm = ip.x - tp.x;
+          const dym = ip.y - tp.y;
+          const dzm = ip.z - tp.z;
+          const meterDist = Math.sqrt(dxm * dxm + dym * dym + dzm * dzm);
+
+          const midX = (ip.x + tp.x) / 2;
+          const midY = (ip.y + tp.y) / 2;
+
+          // Mirror X so a rightward hand moves the cursor right on the canvas,
+          // matching gesture-mode selfie mirroring.
+          const normX = -midX / XR_PLANE_HALF_WIDTH;
+          const normY = (XR_CENTER_Y - midY) / XR_PLANE_HALF_HEIGHT;
+
+          const canvasX = canvas.width / 2 + normX * (canvas.width / 2);
+          const canvasY = canvas.height / 2 + normY * (canvas.height / 2);
+
+          xrHandDataRef.current = {
+            position: {
+              x: Math.max(0, Math.min(canvas.width, canvasX)),
+              y: Math.max(0, Math.min(canvas.height, canvasY))
+            },
+            pinchDist: meterDist < XR_PINCH_THRESHOLD_M ? 0.0 : 1.0,
+            present: true
+          };
+          found = true;
+          break;
+        }
+
+        if (!found) {
+          xrHandDataRef.current.present = false;
+        }
+      };
+
+      try {
+        xrFrameCallbackIdRef.current = session.requestAnimationFrame(onXRFrame);
+      } catch (err) {
+        console.warn('XR requestAnimationFrame failed:', err);
+      }
 
       session.addEventListener('end', () => {
         xrSessionRef.current = null;
+        xrRefSpaceRef.current = null;
+        xrFrameCallbackIdRef.current = null;
+        xrHandDataRef.current.present = false;
         setXrActive(false);
+        setInputMode('controller');
         setControllerStatus('XR session ended');
       });
     } catch (error) {
@@ -262,6 +333,16 @@ const GeminiSlingshot: React.FC = () => {
       setIsAiThinking(false);
       isAiThinkingRef.current = false;
       captureRequestRef.current = true;
+    } else if (inputMode === 'xr-hand') {
+      setControllerStatus('XR hand tracking active');
+      setAiHint('XR hand tracking: pinch thumb + index to grab and release (AI disabled).');
+      setAiRationale(null);
+      setAiRecommendedColor(null);
+      setAimTarget(null);
+      setDebugInfo(null);
+      setIsAiThinking(false);
+      isAiThinkingRef.current = false;
+      xrHandDataRef.current.present = false;
     } else {
       setControllerStatus('Mouse drag mode active');
       setAiHint('Controller mode: manual mouse drag (AI disabled).');
@@ -278,9 +359,6 @@ const GeminiSlingshot: React.FC = () => {
     return () => {
       if (xrSessionRef.current) {
         xrSessionRef.current.end().catch(() => {});
-      }
-      if (inlineXrSessionRef.current) {
-        inlineXrSessionRef.current.end().catch(() => {});
       }
     };
   }, []);
@@ -705,6 +783,18 @@ const GeminiSlingshot: React.FC = () => {
           ctx.lineWidth = 2;
           ctx.stroke();
         }
+      } else if (inputMode === 'xr-hand') {
+        const xrData = xrHandDataRef.current;
+        handPos = xrData.present ? { ...xrData.position } : null;
+        pinchDist = xrData.pinchDist;
+
+        if (handPos) {
+          ctx.beginPath();
+          ctx.arc(handPos.x, handPos.y, 20, 0, Math.PI * 2);
+          ctx.strokeStyle = pinchDist < PINCH_THRESHOLD ? '#66bb6a' : '#a8c7fa';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
       } else {
         const pointer = controllerPointerRef.current;
         handPos = pointer.isDown ? { ...pointer.position } : null;
@@ -1048,10 +1138,6 @@ const GeminiSlingshot: React.FC = () => {
       canvas.removeEventListener('pointermove', handlePointerMove);
       canvas.removeEventListener('pointerup', releasePointer);
       canvas.removeEventListener('pointercancel', cancelPointer);
-      if (inlineXrSessionRef.current) {
-        inlineXrSessionRef.current.end().catch(() => {});
-        inlineXrSessionRef.current = null;
-      }
       if (camera) camera.stop();
       if (hands) hands.close();
     };
@@ -1064,7 +1150,9 @@ const GeminiSlingshot: React.FC = () => {
     ? 'Processing Vision...'
     : inputMode === 'controller'
       ? 'Manual Controller Mode'
-      : 'Waiting for Gesture Input';
+      : inputMode === 'xr-hand'
+        ? 'XR Hand Tracking Active'
+        : 'Waiting for Gesture Input';
 
   return (
     <div className="flex w-full h-screen bg-[#121212] overflow-hidden font-roboto text-[#e3e3e3]">
@@ -1153,12 +1241,6 @@ const GeminiSlingshot: React.FC = () => {
                     >
                         Gesture
                     </button>
-                    <button
-                        onClick={wakeControllerScan}
-                        className="px-3 py-2 rounded-lg text-xs font-bold border border-[#444746] text-[#c4c7c5] bg-[#2a2a2a]"
-                    >
-                        Wake Pad
-                    </button>
                     {xrActive ? (
                         <button
                             onClick={stopVrSession}
@@ -1231,7 +1313,11 @@ const GeminiSlingshot: React.FC = () => {
                 <div className="flex items-center gap-2 bg-[#1e1e1e]/90 px-4 py-2 rounded-full border border-[#444746] backdrop-blur-sm">
                     <Play className="w-3 h-3 text-[#42a5f5] fill-current" />
                         <p className="text-[#e3e3e3] text-xs font-medium">
-                          {inputMode === 'controller' ? 'Click and drag the ball, release to shoot' : 'Pinch & Pull to Shoot'}
+                          {inputMode === 'controller'
+                            ? 'Click and drag the ball, release to shoot'
+                            : inputMode === 'xr-hand'
+                              ? 'Pinch thumb + index near the ball, release to shoot'
+                              : 'Pinch & Pull to Shoot'}
                         </p>
                 </div>
             </div>
