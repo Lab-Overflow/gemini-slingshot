@@ -654,7 +654,7 @@ const GeminiSlingshot: React.FC = () => {
       return getButtonValue(pad, index) > threshold;
     };
 
-    const pollControllerInput = () => {
+    const pollControllerInput = (deltaMs: number) => {
       const pad = getPrimaryGamepad();
       if (!pad) {
         gamepadButtonEdgeRef.current = { prevColor: false, nextColor: false };
@@ -709,18 +709,12 @@ const GeminiSlingshot: React.FC = () => {
         if (isButtonPressed(pad, 13)) ay = 1;
       }
 
-      const stickMagnitude = Math.min(Math.sqrt(ax * ax + ay * ay), 1);
-      const hasStickInput = stickMagnitude > CONTROLLER_DEADZONE;
-      const normalizedX = hasStickInput ? ax / stickMagnitude : 0;
-      const normalizedY = hasStickInput ? ay / stickMagnitude : -1;
-      const pullPower = hasStickInput ? stickMagnitude : 0.35;
-
-      // The stick indicates shooting direction, so we invert it to calculate drag point.
-      const dragPoint = {
-        x: clamp(anchorPos.current.x - normalizedX * MAX_DRAG_DIST * pullPower, 0, canvas.width),
-        y: clamp(anchorPos.current.y - normalizedY * MAX_DRAG_DIST * pullPower, 0, canvas.height)
+      const elapsedMs = Math.max(8, Math.min(deltaMs, 34));
+      const moveStep = Math.max(canvas.width, canvas.height) * CONTROLLER_CURSOR_SPEED * (elapsedMs / 1000);
+      controllerCursorRef.current = {
+        x: clamp(controllerCursorRef.current.x + ax * moveStep, 0, canvas.width),
+        y: clamp(controllerCursorRef.current.y + ay * moveStep, 0, canvas.height)
       };
-      controllerCursorRef.current = dragPoint;
 
       // Avoid trigger/squeeze indices here to prevent accidental color switching.
       const prevColorPressed = isButtonPressed(pad, 4);
@@ -822,8 +816,7 @@ const GeminiSlingshot: React.FC = () => {
           ctx.stroke();
         }
       } else {
-        requiresProximity = false;
-        const controllerInput = pollControllerInput();
+        const controllerInput = pollControllerInput(deltaMs);
         handPos = controllerInput.handPos;
         pinchDist = controllerInput.pinchDist;
         const cursorPos = controllerInput.cursorPos;
@@ -1341,9 +1334,9 @@ const GeminiSlingshot: React.FC = () => {
             <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-30 pointer-events-none opacity-50">
                 <div className="flex items-center gap-2 bg-[#1e1e1e]/90 px-4 py-2 rounded-full border border-[#444746] backdrop-blur-sm">
                     <Play className="w-3 h-3 text-[#42a5f5] fill-current" />
-                    <p className="text-[#e3e3e3] text-xs font-medium">
-                      {inputMode === 'controller' ? 'Use stick to aim + trigger to shoot' : 'Pinch & Pull to Shoot'}
-                    </p>
+                        <p className="text-[#e3e3e3] text-xs font-medium">
+                          {inputMode === 'controller' ? 'Use stick to move cursor, hold trigger to drag, release to shoot' : 'Pinch & Pull to Shoot'}
+                        </p>
                 </div>
             </div>
         )}
