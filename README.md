@@ -54,7 +54,9 @@ If the browser supports WebXR, use `Enter XR` in the in-game HUD to start an imm
    - Connect your GitHub repo.
    - Build command: `npm run build`
    - Build output directory: `dist`
+   - Deploy command: leave empty (do not set `npx wrangler deploy`)
 4. Configure Pages Environment Variables / Secrets:
+   - `VITE_APP_BASE=/` (use `/game/` only if you are serving this app under `/game`)
    - `DEFAULT_AI_PROVIDER=gemini` (or `openai` / `anthropic`)
    - `GEMINI_API_KEY=...`
    - `GEMINI_MODEL=gemini-1.5-flash` (optional)
@@ -68,3 +70,18 @@ If the browser supports WebXR, use `Enter XR` in the in-game HUD to start an imm
 
 - If a provider key is missing, API returns fallback strategy instead of crashing gameplay.
 - Keep all model keys only in Cloudflare Secrets. Do not inject keys into Vite frontend env.
+
+## Cloudflare Build Failure Fix
+
+If your build log shows:
+- `Executing user deploy command: npx wrangler deploy`
+- `Missing entry-point to Worker script or to assets directory`
+
+Then your Pages project is misconfigured as a Worker deploy step.
+
+Fix:
+1. Cloudflare Pages > your project > Settings > Builds & deployments
+2. Keep build command as `npm run build`
+3. Keep output directory as `dist`
+4. Remove deploy command (`npx wrangler deploy`)
+5. Re-run deployment

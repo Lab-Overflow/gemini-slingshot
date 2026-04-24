@@ -14,6 +14,15 @@ import {
 
 const DEFAULT_PROVIDER: AiProvider = 'gemini';
 
+const getApiEndpoint = () => {
+  const baseUrl = import.meta.env.BASE_URL || '/';
+  const trimmed = baseUrl.replace(/^\/+|\/+$/g, '');
+  const prefix = trimmed ? `/${trimmed}` : '';
+  return `${prefix}/api/strategic-hint`;
+};
+
+const API_ENDPOINT = getApiEndpoint();
+
 const getBestLocalTarget = (
   validTargets: TargetCandidate[],
   msg = 'No clear shots-play defensively.'
@@ -82,7 +91,7 @@ export const getStrategicHint = async (
   };
 
   try {
-    const response = await fetch('/api/strategic-hint', {
+    const response = await fetch(API_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
