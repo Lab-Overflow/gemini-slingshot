@@ -599,8 +599,9 @@ const GeminiSlingshot: React.FC = () => {
       const rect = canvas.getBoundingClientRect();
       const scaleX = canvas.width / rect.width;
       const scaleY = canvas.height / rect.height;
+      const rawX = (event.clientX - rect.left) * scaleX;
       return {
-        x: clamp((event.clientX - rect.left) * scaleX, 0, canvas.width),
+        x: clamp(canvas.width - rawX, 0, canvas.width),
         y: clamp((event.clientY - rect.top) * scaleY, 0, canvas.height)
       };
     };
