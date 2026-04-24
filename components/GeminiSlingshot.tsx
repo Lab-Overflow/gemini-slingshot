@@ -23,6 +23,7 @@ const MIN_FORCE_MULT = 0.15;
 const MAX_FORCE_MULT = 0.45;
 const CONTROLLER_DEADZONE = 0.14;
 const CONTROLLER_CURSOR_SPEED = 0.28;
+const QUEST_BROWSER_PATTERN = /OculusBrowser|Quest/i;
 
 type InputMode = 'gesture' | 'controller';
 
@@ -535,6 +536,8 @@ const GeminiSlingshot: React.FC = () => {
     let rafId = 0;
     let didClearLoading = false;
 
+    const isQuestBrowser = QUEST_BROWSER_PATTERN.test(navigator.userAgent);
+
     const getPrimaryGamepad = (): Gamepad | null => {
       const xrSession = xrSessionRef.current;
       if (xrSession?.inputSources) {
@@ -546,18 +549,42 @@ const GeminiSlingshot: React.FC = () => {
       if (typeof navigator.getGamepads === 'function') {
         const pads = navigator.getGamepads();
         for (const pad of pads) {
-          if (pad && pad.connected) return pad;
+          if (!pad) continue;
+          // Some browsers/controllers report connected late; if shape exists, treat it as usable.
+          const hasShape = (pad.axes?.length || 0) > 0 || (pad.buttons?.length || 0) > 0;
+          if (pad.connected || hasShape) return pad;
         }
       }
 
       return null;
     };
 
+    const handleGamepadConnected = (event: Event) => {
+      const gp = (event as GamepadEvent).gamepad;
+      const label = gp?.id ? `Controller connected: ${gp.id}` : 'Controller connected';
+      setControllerStatus(label);
+    };
+
+    const handleGamepadDisconnected = () => {
+      setControllerStatus('Controller disconnected');
+    };
+
+    window.addEventListener('gamepadconnected', handleGamepadConnected);
+    window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
+
     const pollControllerInput = () => {
       const pad = getPrimaryGamepad();
       if (!pad) {
         gamepadButtonEdgeRef.current = { prevColor: false, nextColor: false };
-        setControllerStatus('Waiting for controller...');
+        if ((navigator as any).xr && isQuestBrowser) {
+          if (xrActive) {
+            setControllerStatus('Waiting for XR controller input (press trigger)');
+          } else {
+            setControllerStatus('Press any controller button, or tap Enter XR');
+          }
+        } else {
+          setControllerStatus('Waiting for controller... press any button');
+        }
         return {
           handPos: null as Point | null,
           cursorPos: null as Point | null,
@@ -1017,10 +1044,12 @@ const GeminiSlingshot: React.FC = () => {
       if (rafId) {
         window.cancelAnimationFrame(rafId);
       }
+      window.removeEventListener('gamepadconnected', handleGamepadConnected);
+      window.removeEventListener('gamepaddisconnected', handleGamepadDisconnected);
       if (camera) camera.stop();
       if (hands) hands.close();
     };
-  }, [initGrid, inputMode, cycleSelectedColor, setControllerStatus]);
+  }, [initGrid, inputMode, cycleSelectedColor, setControllerStatus, xrActive]);
 
   const recColorConfig = aiRecommendedColor ? COLOR_CONFIG[aiRecommendedColor] : null;
   const borderColor = recColorConfig ? recColorConfig.hex : '#444746';
