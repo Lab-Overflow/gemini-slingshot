@@ -75,6 +75,7 @@ const GeminiSlingshot: React.FC = () => {
   const aiRecommendedColorRef = useRef<BubbleColor | null>(null);
   const aiProviderRef = useRef<AiProvider>('openai');
   const aiModelOverrideRef = useRef<string>('');
+  const inputModeRef = useRef<InputMode>('controller');
   const availableColorsRef = useRef<BubbleColor[]>([]);
   const controllerCursorRef = useRef<Point>({ x: 0, y: 0 });
   const controllerStatusRef = useRef<string>('Controller inactive');
@@ -132,6 +133,10 @@ const GeminiSlingshot: React.FC = () => {
   useEffect(() => {
     aiModelOverrideRef.current = aiModelOverride;
   }, [aiModelOverride]);
+
+  useEffect(() => {
+    inputModeRef.current = inputMode;
+  }, [inputMode]);
 
   useEffect(() => {
     availableColorsRef.current = availableColors;
@@ -261,8 +266,23 @@ const GeminiSlingshot: React.FC = () => {
   useEffect(() => {
     if (inputMode === 'gesture') {
       setControllerStatus('Gesture mode active');
+      setAiHint('Gesture mode: AI strategy enabled.');
+      setAiRationale(null);
+      setAiRecommendedColor(null);
+      setAimTarget(null);
+      setDebugInfo(null);
+      setIsAiThinking(false);
+      isAiThinkingRef.current = false;
+      captureRequestRef.current = true;
     } else {
       setControllerStatus('Waiting for controller... press trigger/any button');
+      setAiHint('Controller mode: manual play (AI disabled).');
+      setAiRationale(null);
+      setAiRecommendedColor(null);
+      setAimTarget(null);
+      setDebugInfo(null);
+      setIsAiThinking(false);
+      isAiThinkingRef.current = false;
     }
   }, [inputMode, setControllerStatus]);
 
@@ -320,9 +340,11 @@ const GeminiSlingshot: React.FC = () => {
     bubbles.current = newBubbles;
     updateAvailableColors();
     
-    // Trigger initial AI analysis after a short delay to allow render
+    // Trigger initial AI analysis after a short delay to allow render (gesture mode only).
     setTimeout(() => {
-        captureRequestRef.current = true;
+        if (inputModeRef.current === 'gesture') {
+          captureRequestRef.current = true;
+        }
     }, 2000);
   }, []);
 
@@ -471,6 +493,10 @@ const GeminiSlingshot: React.FC = () => {
   };
 
   const performAiAnalysis = async (screenshot: string) => {
+    if (inputModeRef.current !== 'gesture') {
+      return;
+    }
+
     // Lock interaction immediately via ref (fast) and state (render)
     isAiThinkingRef.current = true;
     setIsAiThinking(true);
@@ -951,7 +977,9 @@ const GeminiSlingshot: React.FC = () => {
 
             ballPos.current = { ...anchorPos.current };
             ballVel.current = { x: 0, y: 0 };
-            captureRequestRef.current = true;
+            if (inputModeRef.current === 'gesture') {
+              captureRequestRef.current = true;
+            }
           }
 
           if (ballPos.current.y > canvas.height) {
@@ -1071,6 +1099,11 @@ const GeminiSlingshot: React.FC = () => {
       if (captureRequestRef.current) {
         captureRequestRef.current = false;
 
+        // AI is intentionally disabled in controller mode for pure manual gameplay.
+        if (inputModeRef.current !== 'gesture') {
+          return;
+        }
+
         const offscreen = document.createElement('canvas');
         const targetWidth = 480;
         const scale = Math.min(1, targetWidth / canvas.width);
@@ -1141,6 +1174,12 @@ const GeminiSlingshot: React.FC = () => {
 
   const recColorConfig = aiRecommendedColor ? COLOR_CONFIG[aiRecommendedColor] : null;
   const borderColor = recColorConfig ? recColorConfig.hex : '#444746';
+  const isGestureMode = inputMode === 'gesture';
+  const statusHeadline = isAiThinking
+    ? 'Processing Vision...'
+    : inputMode === 'controller'
+      ? 'Manual Controller Mode'
+      : 'Waiting for Gesture Input';
 
   return (
     <div className="flex w-full h-screen bg-[#121212] overflow-hidden font-roboto text-[#e3e3e3]">
@@ -1350,6 +1389,7 @@ const GeminiSlingshot: React.FC = () => {
                     <select
                         value={aiProvider}
                         onChange={(e) => setAiProvider(e.target.value as AiProvider)}
+                        disabled={!isGestureMode}
                         className="bg-[#121212] border border-[#444746] rounded px-2 py-1 text-xs text-[#e3e3e3]"
                     >
                         <option value="gemini">Gemini</option>
@@ -1363,10 +1403,16 @@ const GeminiSlingshot: React.FC = () => {
                         value={aiModelOverride}
                         onChange={(e) => setAiModelOverride(e.target.value)}
                         placeholder="Default: gpt-5-mini"
+                        disabled={!isGestureMode}
                         className="bg-[#121212] border border-[#444746] rounded px-2 py-1 text-xs text-[#e3e3e3]"
                     />
                 </label>
              </div>
+             {!isGestureMode && (
+                <p className="text-[10px] text-[#9aa0a6] mt-1">
+                  AI provider/model settings are used only in Gesture mode.
+                </p>
+             )}
              
              {aiRecommendedColor && (
                 <div className="flex items-center gap-2 mt-3 bg-black/20 p-2 rounded">
@@ -1395,7 +1441,7 @@ const GeminiSlingshot: React.FC = () => {
                 <div className={`p-3 rounded-lg border ${isAiThinking ? 'bg-[#a8c7fa]/10 border-[#a8c7fa]/30 text-[#a8c7fa]' : 'bg-[#444746]/20 border-[#444746]/50 text-[#c4c7c5]'}`}>
                     <div className="flex items-center gap-2">
                         <div className={`w-2 h-2 rounded-full ${isAiThinking ? 'bg-[#a8c7fa] animate-pulse' : 'bg-[#66bb6a]'}`} />
-                        <span className="text-sm font-mono">{isAiThinking ? 'Processing Vision...' : 'Waiting for Input'}</span>
+                        <span className="text-sm font-mono">{statusHeadline}</span>
                     </div>
                     <p className="text-[10px] text-[#9aa0a6] mt-2 font-mono">
                         {`Mode=${inputMode} | ${inputStatus}`}
@@ -1404,7 +1450,7 @@ const GeminiSlingshot: React.FC = () => {
             </div>
 
             {/* Vision Input */}
-            {debugInfo?.screenshotBase64 && (
+            {isGestureMode && debugInfo?.screenshotBase64 && (
                 <div>
                     <div className="flex items-center gap-2 mb-2 text-[#c4c7c5] text-xs font-bold uppercase tracking-wider">
                         <Eye className="w-3 h-3" /> Vision Input
@@ -1413,7 +1459,7 @@ const GeminiSlingshot: React.FC = () => {
                          {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={debugInfo.screenshotBase64} alt="AI Vision" className="w-full h-auto opacity-80 group-hover:opacity-100 transition-opacity" />
                         <div className="absolute bottom-0 left-0 right-0 bg-black/70 p-1 text-[10px] text-center text-gray-400 font-mono">
-                            Sent to gemini-3-flash
+                            {`Sent to ${debugInfo.model || aiModelOverride || 'default model'}`}
                         </div>
                     </div>
                 </div>
