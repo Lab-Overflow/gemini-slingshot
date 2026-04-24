@@ -6,7 +6,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { getStrategicHint, TargetCandidate } from '../services/geminiService';
 import { Point, Bubble, Particle, BubbleColor, DebugInfo, AiProvider } from '../types';
-import { Loader2, Trophy, BrainCircuit, Play, MousePointerClick, Eye, Terminal, AlertTriangle, Target, Lightbulb, Monitor } from 'lucide-react';
+import { Loader2, Trophy, BrainCircuit, Play, MousePointerClick, Eye, Terminal, AlertTriangle, Target, Lightbulb, Monitor, Maximize2, Minimize2 } from 'lucide-react';
 
 const PINCH_THRESHOLD = 0.05;
 const GRAVITY = 0.0; 
@@ -104,6 +104,7 @@ const GeminiSlingshot: React.FC = () => {
   const [inputStatus, setInputStatus] = useState('Controller inactive');
   const [xrSupported, setXrSupported] = useState(false);
   const [xrActive, setXrActive] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Sync state to ref
   useEffect(() => {
@@ -208,6 +209,28 @@ const GeminiSlingshot: React.FC = () => {
     } catch (error) {
       console.warn('Failed to end XR session:', error);
     }
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const target = gameContainerRef.current;
+    if (!target) return;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await target.requestFullscreen();
+      }
+    } catch (error) {
+      console.warn('Fullscreen toggle failed:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
   useEffect(() => {
@@ -1105,10 +1128,22 @@ const GeminiSlingshot: React.FC = () => {
                     >
                         Gesture
                     </button>
+                    <button
+                        onClick={toggleFullscreen}
+                        title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                        className={`ml-auto px-3 py-2 rounded-lg text-xs font-bold border flex items-center gap-1 transition ${
+                            isFullscreen
+                              ? 'bg-[#fdd835]/20 border-[#fdd835] text-[#fdd835]'
+                              : 'bg-[#2a2a2a] border-[#444746] text-[#c4c7c5]'
+                        }`}
+                    >
+                        {isFullscreen ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+                        {isFullscreen ? 'Exit FS' : 'Fullscreen'}
+                    </button>
                     {xrActive ? (
                         <button
                             onClick={stopVrSession}
-                            className="ml-auto px-3 py-2 rounded-lg text-xs font-bold border border-[#ef5350] text-[#ef5350] bg-[#ef5350]/10"
+                            className="px-3 py-2 rounded-lg text-xs font-bold border border-[#ef5350] text-[#ef5350] bg-[#ef5350]/10"
                         >
                             Exit XR
                         </button>
@@ -1116,7 +1151,7 @@ const GeminiSlingshot: React.FC = () => {
                         <button
                             onClick={startVrSession}
                             disabled={!xrSupported}
-                            className={`ml-auto px-3 py-2 rounded-lg text-xs font-bold border ${
+                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${
                                 xrSupported
                                   ? 'border-[#a8c7fa] text-[#a8c7fa] bg-[#a8c7fa]/10'
                                   : 'border-[#444746] text-[#757575] bg-[#2a2a2a]'
