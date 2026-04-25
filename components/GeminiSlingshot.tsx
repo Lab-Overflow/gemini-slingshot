@@ -736,6 +736,22 @@ const GeminiSlingshot: React.FC = () => {
       let handPos: Point | null = null;
       let pinchDist = 1.0;
       let requiresProximity = true;
+      const isXrControllerMode = Boolean(xrSessionRef.current) && inputMode === 'controller';
+
+      const xrPaletteColors = COLOR_KEYS.filter(color => availableColorsRef.current.includes(color));
+      const xrSwatchRadius = Math.max(16, Math.min(28, canvas.width * 0.02));
+      const xrSwatchGap = Math.max(10, xrSwatchRadius * 0.7);
+      const xrPaletteY = canvas.height - xrSwatchRadius - 20;
+      const xrTotalWidth = xrPaletteColors.length > 0
+        ? xrPaletteColors.length * xrSwatchRadius * 2 + (xrPaletteColors.length - 1) * xrSwatchGap
+        : 0;
+      const xrStartX = canvas.width * 0.5 - xrTotalWidth * 0.5 + xrSwatchRadius;
+      const xrSwatches = xrPaletteColors.map((color, index) => ({
+        color,
+        x: xrStartX + index * (xrSwatchRadius * 2 + xrSwatchGap),
+        y: xrPaletteY,
+        radius: xrSwatchRadius
+      }));
 
       if (inputMode === 'gesture') {
         if (results?.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
@@ -773,8 +789,34 @@ const GeminiSlingshot: React.FC = () => {
         }
       }
 
-      const isHoldingLaunch = handPos && pinchDist < PINCH_THRESHOLD;
       const isLocked = isAiThinkingRef.current;
+      const pointer = controllerPointerRef.current;
+
+      if (
+        isXrControllerMode &&
+        pointer.isDown &&
+        !isLocked &&
+        !isFlying.current &&
+        !isPinching.current
+      ) {
+        const selectedSwatch = xrSwatches.find(swatch => {
+          const dx = pointer.position.x - swatch.x;
+          const dy = pointer.position.y - swatch.y;
+          return Math.sqrt(dx * dx + dy * dy) <= swatch.radius + 8;
+        });
+
+        if (selectedSwatch) {
+          if (selectedColorRef.current !== selectedSwatch.color) {
+            setSelectedColor(selectedSwatch.color);
+            setControllerStatus(`XR selected ${COLOR_CONFIG[selectedSwatch.color].label}`);
+          }
+          pointer.isDown = false;
+          handPos = null;
+          pinchDist = 1.0;
+        }
+      }
+
+      const isHoldingLaunch = handPos && pinchDist < PINCH_THRESHOLD;
 
       if (!isLocked && handPos && isHoldingLaunch && !isFlying.current) {
         const distToBall = Math.sqrt(Math.pow(handPos.x - ballPos.current.x, 2) + Math.pow(handPos.y - ballPos.current.y, 2));
@@ -1028,6 +1070,34 @@ const GeminiSlingshot: React.FC = () => {
           ctx.fill();
           ctx.globalAlpha = 1.0;
         }
+      }
+
+      if (isXrControllerMode && xrSwatches.length > 0) {
+        const paddingX = 18;
+        const paddingY = 14;
+        const boxWidth = xrTotalWidth + paddingX * 2;
+        const boxHeight = xrSwatchRadius * 2 + paddingY * 2;
+        const boxX = canvas.width * 0.5 - boxWidth * 0.5;
+        const boxY = xrPaletteY - xrSwatchRadius - paddingY;
+
+        ctx.fillStyle = 'rgba(10, 14, 20, 0.72)';
+        ctx.strokeStyle = 'rgba(168, 199, 250, 0.24)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 16);
+        ctx.fill();
+        ctx.stroke();
+
+        xrSwatches.forEach(swatch => {
+          drawBubble(ctx, swatch.x, swatch.y, swatch.radius, swatch.color);
+          if (selectedColorRef.current === swatch.color) {
+            ctx.beginPath();
+            ctx.arc(swatch.x, swatch.y, swatch.radius + 6, 0, Math.PI * 2);
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          }
+        });
       }
 
       ctx.restore();
