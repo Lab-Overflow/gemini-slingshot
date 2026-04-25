@@ -23,6 +23,7 @@ const MIN_FORCE_MULT = 0.15;
 const MAX_FORCE_MULT = 0.45;
 
 type InputMode = 'gesture' | 'controller';
+type ImmersiveXrMode = 'immersive-vr' | 'immersive-ar';
 type XrImmersiveSceneController = {
   start: (session: XRSession) => Promise<void>;
   stop: () => Promise<void>;
@@ -39,6 +40,21 @@ const COLOR_CONFIG: Record<BubbleColor, { hex: string, points: number, label: st
 };
 
 const COLOR_KEYS: BubbleColor[] = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'];
+
+const getSupportedImmersiveXrMode = async (xr: any): Promise<ImmersiveXrMode | null> => {
+  if (!xr || typeof xr.isSessionSupported !== 'function') return null;
+
+  const modes: ImmersiveXrMode[] = ['immersive-vr', 'immersive-ar'];
+  for (const mode of modes) {
+    try {
+      if (await xr.isSessionSupported(mode)) return mode;
+    } catch {
+      // Some browsers reject unsupported modes instead of returning false.
+    }
+  }
+
+  return null;
+};
 
 // Color Helper for Gradients
 const adjustColor = (color: string, amount: number) => {
@@ -171,12 +187,8 @@ const GeminiSlingshot: React.FC = () => {
 
   useEffect(() => {
     const xr = (navigator as any).xr;
-    if (!xr || typeof xr.isSessionSupported !== 'function') {
-      setXrSupported(false);
-      return;
-    }
-    xr.isSessionSupported('immersive-vr')
-      .then((supported: boolean) => setXrSupported(Boolean(supported)))
+    getSupportedImmersiveXrMode(xr)
+      .then((mode) => setXrSupported(Boolean(mode)))
       .catch(() => setXrSupported(false));
   }, []);
 
@@ -193,7 +205,16 @@ const GeminiSlingshot: React.FC = () => {
     }
 
     try {
-      const session = await xr.requestSession('immersive-vr', {
+      setControllerStatus('Checking XR support...');
+      const sessionMode = await getSupportedImmersiveXrMode(xr);
+      if (!sessionMode) {
+        setXrSupported(false);
+        setControllerStatus('No immersive WebXR session available on this device/browser');
+        return;
+      }
+
+      setXrSupported(true);
+      const session = await xr.requestSession(sessionMode, {
         optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
       });
 
@@ -205,7 +226,7 @@ const GeminiSlingshot: React.FC = () => {
       xrSessionRef.current = session;
       setXrActive(true);
       setInputMode('controller');
-      setControllerStatus('XR immersive scene active');
+      setControllerStatus(`${sessionMode === 'immersive-vr' ? 'VR' : 'AR'} immersive scene active`);
 
       session.addEventListener('end', () => {
         xrSessionRef.current = null;
@@ -1180,11 +1201,11 @@ const GeminiSlingshot: React.FC = () => {
                     ) : (
                         <button
                             onClick={startVrSession}
-                            disabled={!xrSupported}
+                            title={xrSupported ? 'Enter immersive XR' : 'Click to check XR support on this browser/device'}
                             className={`px-3 py-2 rounded-lg text-xs font-bold border ${
                                 xrSupported
-                                  ? 'border-[#a8c7fa] text-[#a8c7fa] bg-[#a8c7fa]/10'
-                                  : 'border-[#444746] text-[#757575] bg-[#2a2a2a]'
+                                  ? 'border-[#a8c7fa] text-[#a8c7fa] bg-[#a8c7fa]/10 hover:bg-[#a8c7fa]/20'
+                                  : 'border-[#fdd835]/70 text-[#fdd835] bg-[#fdd835]/10 hover:bg-[#fdd835]/20'
                             }`}
                         >
                             Enter XR
