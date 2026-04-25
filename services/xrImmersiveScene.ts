@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
 
 type Point2D = { x: number; y: number };
 
@@ -10,7 +11,10 @@ type XrInputBridge = {
 };
 
 type ControllerBinding = {
+  index: number;
   controller: THREE.Group;
+  grip: THREE.Group;
+  ray: THREE.Line;
   onSelectStart: () => void;
   onSelectEnd: () => void;
 };
@@ -38,11 +42,13 @@ export const createXrImmersiveScene = (
   let panelPointer: THREE.Mesh | null = null;
 
   const controllerBindings: ControllerBinding[] = [];
+  const controllerModelFactory = new XRControllerModelFactory();
 
   const raycaster = new THREE.Raycaster();
   const tmpOrigin = new THREE.Vector3();
   const tmpDirection = new THREE.Vector3();
   const tmpQuaternion = new THREE.Quaternion();
+  const tmpPanelPoint = new THREE.Vector3();
 
   const lastPointer: Point2D = {
     x: inputBridge.sourceCanvas.width * 0.5,
@@ -50,6 +56,7 @@ export const createXrImmersiveScene = (
   };
 
   let triggerDown = false;
+  let activeControllerIndex: number | null = null;
 
   const onResize = () => {
     if (!renderer || !camera) return;
@@ -77,35 +84,56 @@ export const createXrImmersiveScene = (
   const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
   const updatePanelInteraction = () => {
-    if (!panelPlane || controllerBindings.length === 0) return;
+    if (!panelPlane || !panelGroup || controllerBindings.length === 0) return;
 
-    const { controller } = controllerBindings[0];
-    controller.getWorldPosition(tmpOrigin);
-    controller.getWorldQuaternion(tmpQuaternion);
-    tmpDirection.set(0, 0, -1).applyQuaternion(tmpQuaternion).normalize();
+    let bestHit: THREE.Intersection | null = null;
+    let bestController: ControllerBinding | null = null;
 
-    raycaster.set(tmpOrigin, tmpDirection);
-    const hits = raycaster.intersectObject(panelPlane, false);
+    for (const binding of controllerBindings) {
+      if (triggerDown && activeControllerIndex !== null && binding.index !== activeControllerIndex) {
+        binding.ray.material.opacity = 0.35;
+        binding.ray.scale.z = 3;
+        continue;
+      }
 
-    if (hits.length === 0) {
+      binding.controller.getWorldPosition(tmpOrigin);
+      binding.controller.getWorldQuaternion(tmpQuaternion);
+      tmpDirection.set(0, 0, -1).applyQuaternion(tmpQuaternion).normalize();
+
+      raycaster.set(tmpOrigin, tmpDirection);
+      const hit = raycaster.intersectObject(panelPlane, false)[0];
+      const hasHit = Boolean(hit);
+      binding.ray.material.opacity = hasHit ? 0.95 : 0.45;
+      binding.ray.scale.z = hasHit ? Math.min(Math.max(hit!.distance, 0.2), 3.5) : 3;
+
+      if (!hit) continue;
+      if (!bestHit || hit.distance < bestHit.distance) {
+        bestHit = hit;
+        bestController = binding;
+      }
+    }
+
+    if (!bestHit || !bestController) {
       if (panelPointer) panelPointer.visible = false;
       if (triggerDown) {
         triggerDown = false;
+        activeControllerIndex = null;
         inputBridge.updatePointer(lastPointer, false);
         notify('Controller left panel, drag released');
       }
       return;
     }
 
-    const hit = hits[0];
-    const uv = hit.uv;
+    const uv = bestHit.uv;
     if (!uv) return;
 
     if (panelPointer) {
       panelPointer.visible = true;
-      panelPointer.position.copy(hit.point);
-      if (hit.face?.normal) {
-        panelPointer.position.addScaledVector(hit.face.normal, 0.001);
+      tmpPanelPoint.copy(bestHit.point);
+      panelGroup.worldToLocal(tmpPanelPoint);
+      panelPointer.position.copy(tmpPanelPoint);
+      if (bestHit.face?.normal) {
+        panelPointer.position.addScaledVector(bestHit.face.normal, 0.001);
       } else {
         panelPointer.position.z += 0.001;
       }
@@ -117,6 +145,9 @@ export const createXrImmersiveScene = (
     lastPointer.x = clamp(uv.x * canvasWidth, 0, canvasWidth);
     lastPointer.y = clamp((1 - uv.y) * canvasHeight, 0, canvasHeight);
 
+    if (triggerDown && activeControllerIndex === null) {
+      activeControllerIndex = bestController.index;
+    }
     inputBridge.updatePointer(lastPointer, triggerDown);
   };
 
@@ -215,54 +246,67 @@ export const createXrImmersiveScene = (
     scene.add(panelGroup);
   };
 
-  const attachController = () => {
+  const attachControllers = () => {
     if (!renderer || !scene) return;
 
-    const controller = renderer.xr.getController(0);
+    for (let i = 0; i < 2; i += 1) {
+      const controller = renderer.xr.getController(i);
+      const grip = renderer.xr.getControllerGrip(i);
+      grip.add(controllerModelFactory.createControllerModel(grip));
 
-    const ray = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, -1)
-      ]),
-      new THREE.LineBasicMaterial({ color: 0xa8c7fa, transparent: true, opacity: 0.9 })
-    );
-    ray.scale.z = 3;
-    controller.add(ray);
+      const ray = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 0, -1)
+        ]),
+        new THREE.LineBasicMaterial({ color: 0xa8c7fa, transparent: true, opacity: 0.7 })
+      );
+      ray.scale.z = 3;
+      controller.add(ray);
 
-    const onSelectStart = () => {
-      triggerDown = true;
-      inputBridge.updatePointer(lastPointer, true);
-      notify('XR dragging');
-    };
+      const onSelectStart = () => {
+        triggerDown = true;
+        activeControllerIndex = i;
+        inputBridge.updatePointer(lastPointer, true);
+        notify('XR dragging');
+      };
 
-    const onSelectEnd = () => {
-      triggerDown = false;
-      inputBridge.updatePointer(lastPointer, false);
-      notify('XR drag released');
-    };
+      const onSelectEnd = () => {
+        if (activeControllerIndex !== null && activeControllerIndex !== i) return;
+        triggerDown = false;
+        activeControllerIndex = null;
+        inputBridge.updatePointer(lastPointer, false);
+        notify('XR drag released');
+      };
 
-    controller.addEventListener('selectstart', onSelectStart);
-    controller.addEventListener('selectend', onSelectEnd);
+      controller.addEventListener('selectstart', onSelectStart);
+      controller.addEventListener('selectend', onSelectEnd);
 
-    scene.add(controller);
-    controllerBindings.push({ controller, onSelectStart, onSelectEnd });
+      scene.add(controller);
+      scene.add(grip);
+      controllerBindings.push({ index: i, controller, grip, ray, onSelectStart, onSelectEnd });
+    }
   };
 
   const teardown = async () => {
     inputBridge.updatePointer(lastPointer, false);
+    activeControllerIndex = null;
+    triggerDown = false;
 
     if (!renderer) return;
 
     renderer.setAnimationLoop(null);
     window.removeEventListener('resize', onResize);
 
-    controllerBindings.forEach(({ controller, onSelectStart, onSelectEnd }) => {
+    controllerBindings.forEach(({ controller, grip, onSelectStart, onSelectEnd }) => {
       controller.removeEventListener('selectstart', onSelectStart);
       controller.removeEventListener('selectend', onSelectEnd);
       disposeObjectTree(controller);
+      disposeObjectTree(grip);
       controller.clear();
+      grip.clear();
       if (scene) scene.remove(controller);
+      if (scene) scene.remove(grip);
     });
     controllerBindings.length = 0;
 
@@ -316,7 +360,7 @@ export const createXrImmersiveScene = (
 
       createEnvironment();
       createGamePanel();
-      attachController();
+      attachControllers();
 
       await renderer.xr.setSession(session);
 
@@ -330,7 +374,7 @@ export const createXrImmersiveScene = (
         renderer.render(scene, camera);
       });
 
-      notify('XR ready: play the 2D game on the floating panel');
+      notify('XR ready: use controller ray + trigger to drag and launch');
     },
     async stop() {
       await teardown();
