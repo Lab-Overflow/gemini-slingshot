@@ -763,6 +763,10 @@ const GeminiSlingshot: React.FC = () => {
         const pointer = controllerPointerRef.current;
         handPos = pointer.isDown ? { ...pointer.position } : null;
         pinchDist = pointer.isDown ? 0.0 : 1.0;
+        // In XR mode, trigger should directly grab the current bubble.
+        if (xrSessionRef.current) {
+          requiresProximity = false;
+        }
       }
 
       const isHoldingLaunch = handPos && pinchDist < PINCH_THRESHOLD;
