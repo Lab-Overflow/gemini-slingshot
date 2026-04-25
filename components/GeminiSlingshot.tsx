@@ -101,6 +101,7 @@ const GeminiSlingshot: React.FC = () => {
   const controllerStatusRef = useRef<string>('Controller inactive');
   const xrSessionRef = useRef<any>(null);
   const xrImmersiveSceneRef = useRef<XrImmersiveSceneController | null>(null);
+  const xrFramePumpRef = useRef<(() => void) | null>(null);
   
   // AI Request Trigger
   const captureRequestRef = useRef<boolean>(false);
@@ -231,6 +232,9 @@ const GeminiSlingshot: React.FC = () => {
           updatePointer: (position: Point, isDown: boolean) => {
             controllerPointerRef.current.position = position;
             controllerPointerRef.current.isDown = isDown;
+          },
+          pumpGameFrame: () => {
+            xrFramePumpRef.current?.();
           }
         },
         setControllerStatus
@@ -1052,12 +1056,17 @@ const GeminiSlingshot: React.FC = () => {
       }
     };
 
+    // XR can throttle regular window RAF; expose a direct frame pump for XR loop.
+    xrFramePumpRef.current = () => renderFrame(undefined, 16);
+
     const startControllerLoop = () => {
       let lastFrame = performance.now();
       const tick = (now: number) => {
         const deltaMs = now - lastFrame;
         lastFrame = now;
-        renderFrame(undefined, deltaMs);
+        if (!xrSessionRef.current) {
+          renderFrame(undefined, deltaMs);
+        }
         rafId = window.requestAnimationFrame(tick);
       };
       rafId = window.requestAnimationFrame(tick);
@@ -1090,6 +1099,7 @@ const GeminiSlingshot: React.FC = () => {
     }
 
     return () => {
+      xrFramePumpRef.current = null;
       if (rafId) {
         window.cancelAnimationFrame(rafId);
       }

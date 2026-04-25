@@ -8,6 +8,7 @@ type XrSceneStatus = (message: string) => void;
 type XrInputBridge = {
   sourceCanvas: HTMLCanvasElement;
   updatePointer: (position: Point2D, isDown: boolean) => void;
+  pumpGameFrame?: () => void;
 };
 
 type ControllerBinding = {
@@ -369,6 +370,7 @@ export const createXrImmersiveScene = (
       renderer.setAnimationLoop(() => {
         if (!renderer || !scene || !camera) return;
 
+        inputBridge.pumpGameFrame?.();
         if (panelTexture) panelTexture.needsUpdate = true;
         updatePanelInteraction();
         renderer.render(scene, camera);
