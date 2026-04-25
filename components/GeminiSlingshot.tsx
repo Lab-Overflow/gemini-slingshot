@@ -23,6 +23,10 @@ const MIN_FORCE_MULT = 0.15;
 const MAX_FORCE_MULT = 0.45;
 
 type InputMode = 'gesture' | 'controller';
+type XrImmersiveSceneController = {
+  start: (session: XRSession) => Promise<void>;
+  stop: () => Promise<void>;
+};
 
 // Material Design Colors & Scoring Strategy
 const COLOR_CONFIG: Record<BubbleColor, { hex: string, points: number, label: string }> = {
@@ -80,6 +84,7 @@ const GeminiSlingshot: React.FC = () => {
   });
   const controllerStatusRef = useRef<string>('Controller inactive');
   const xrSessionRef = useRef<any>(null);
+  const xrImmersiveSceneRef = useRef<XrImmersiveSceneController | null>(null);
   
   // AI Request Trigger
   const captureRequestRef = useRef<boolean>(false);
@@ -176,9 +181,14 @@ const GeminiSlingshot: React.FC = () => {
   }, []);
 
   const startVrSession = useCallback(async () => {
+    const mountEl = gameContainerRef.current;
     const xr = (navigator as any).xr;
     if (!xr || typeof xr.requestSession !== 'function') {
       setControllerStatus('WebXR not available in this browser');
+      return;
+    }
+    if (!mountEl) {
+      setControllerStatus('XR mount point unavailable');
       return;
     }
 
@@ -186,26 +196,51 @@ const GeminiSlingshot: React.FC = () => {
       const session = await xr.requestSession('immersive-vr', {
         optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
       });
+
+      const { createXrImmersiveScene } = await import('../services/xrImmersiveScene');
+      const immersiveScene = createXrImmersiveScene(mountEl, setControllerStatus);
+      xrImmersiveSceneRef.current = immersiveScene;
+      await immersiveScene.start(session);
+
       xrSessionRef.current = session;
       setXrActive(true);
       setInputMode('controller');
-      setControllerStatus('XR session active');
+      setControllerStatus('XR immersive scene active');
 
       session.addEventListener('end', () => {
         xrSessionRef.current = null;
         setXrActive(false);
+        const sceneController = xrImmersiveSceneRef.current;
+        xrImmersiveSceneRef.current = null;
+        sceneController?.stop().catch(() => {});
         setControllerStatus('XR session ended');
       });
     } catch (error) {
+      const sceneController = xrImmersiveSceneRef.current;
+      xrImmersiveSceneRef.current = null;
+      sceneController?.stop().catch(() => {});
+      if (xrSessionRef.current) {
+        xrSessionRef.current.end().catch(() => {});
+        xrSessionRef.current = null;
+      }
       setControllerStatus('Failed to start XR session');
       console.error('XR session error:', error);
     }
   }, [setControllerStatus]);
 
   const stopVrSession = useCallback(async () => {
-    if (!xrSessionRef.current) return;
+    const sceneController = xrImmersiveSceneRef.current;
+    if (!xrSessionRef.current) {
+      if (sceneController) {
+        await sceneController.stop();
+        xrImmersiveSceneRef.current = null;
+      }
+      return;
+    }
     try {
       await xrSessionRef.current.end();
+      await sceneController?.stop();
+      xrImmersiveSceneRef.current = null;
     } catch (error) {
       console.warn('Failed to end XR session:', error);
     }
@@ -261,6 +296,10 @@ const GeminiSlingshot: React.FC = () => {
     return () => {
       if (xrSessionRef.current) {
         xrSessionRef.current.end().catch(() => {});
+      }
+      if (xrImmersiveSceneRef.current) {
+        xrImmersiveSceneRef.current.stop().catch(() => {});
+        xrImmersiveSceneRef.current = null;
       }
     };
   }, []);
