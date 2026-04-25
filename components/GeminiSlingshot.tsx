@@ -194,6 +194,7 @@ const GeminiSlingshot: React.FC = () => {
 
   const startVrSession = useCallback(async () => {
     const mountEl = gameContainerRef.current;
+    const gameplayCanvas = canvasRef.current;
     const xr = (navigator as any).xr;
     if (!xr || typeof xr.requestSession !== 'function') {
       setControllerStatus('WebXR not available in this browser');
@@ -201,6 +202,10 @@ const GeminiSlingshot: React.FC = () => {
     }
     if (!mountEl) {
       setControllerStatus('XR mount point unavailable');
+      return;
+    }
+    if (!gameplayCanvas) {
+      setControllerStatus('Game canvas unavailable for XR panel');
       return;
     }
 
@@ -219,7 +224,17 @@ const GeminiSlingshot: React.FC = () => {
       });
 
       const { createXrImmersiveScene } = await import('../services/xrImmersiveScene');
-      const immersiveScene = createXrImmersiveScene(mountEl, setControllerStatus);
+      const immersiveScene = createXrImmersiveScene(
+        mountEl,
+        {
+          sourceCanvas: gameplayCanvas,
+          updatePointer: (position: Point, isDown: boolean) => {
+            controllerPointerRef.current.position = position;
+            controllerPointerRef.current.isDown = isDown;
+          }
+        },
+        setControllerStatus
+      );
       xrImmersiveSceneRef.current = immersiveScene;
       await immersiveScene.start(session);
 
